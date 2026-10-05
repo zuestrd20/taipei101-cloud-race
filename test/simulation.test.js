@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CHARACTERS, TRACK, HAZARDS, SHORTCUTS, createRace, stepRace, hazardAt } from '../src/simulation.js';
+import { CHARACTERS, TRACK, HAZARDS, SHORTCUTS, ITEM_PICKUPS, createRace, stepRace, hazardAt } from '../src/simulation.js';
 
 function start(seed = 42) {
   const race = createRace(CHARACTERS[0].id, seed);
@@ -75,6 +75,19 @@ test('dash has a real energy cost, shared cooldown, and faster movement', () => 
   assert.equal(dash.events.filter(e => e.type === 'dash' && e.racerId === 'player').length, 1);
 });
 
+test('baseline movement is exactly three times the previous speed without scaling time or cooldowns', () => {
+  assert.equal(TRACK.baseSpeed, 1.38);
+  const race = start(); isolate(race);
+  advance(race, 1, { forward: 1 });
+  assert.ok(Math.abs(race.racers[0].progress - 0.46 * 3) < 1e-10);
+  assert.ok(Math.abs(race.time - 1) < 1e-10);
+  stepRace(race, 1 / 60, { dash: true, jump: true, shield: true });
+  advance(race, 29 / 60);
+  assert.ok(Math.abs(race.racers[0].cooldowns.dash - 3.5) < 1e-10);
+  assert.ok(Math.abs(race.racers[0].jump - 0.3) < 1e-10);
+  assert.ok(Math.abs(race.racers[0].shield - 0.4) < 1e-10);
+});
+
 test('shield in the perfect window reflects; an older shield blocks', () => {
   const race = start(); isolate(race);
   const [player, enemy] = race.racers;
@@ -140,13 +153,13 @@ test('supply checkpoints replenish energy and never move backwards', () => {
   assert.equal(player.progress, 10);
 });
 
-test('idle player loses to moving AI within five minutes', () => {
+test('idle player loses to moving AI in roughly one minute', () => {
   const race = start(2026);
-  advance(race, 300);
+  advance(race, 120);
   assert.equal(race.status, 'finished');
   assert.notEqual(race.winner, 'player');
   assert.equal(race.racers[0].progress, 0);
-  assert.ok(race.time > 180 && race.time < 300, `AI finish ${race.time.toFixed(2)}s`);
+  assert.ok(race.time > 50 && race.time < 95, `AI finish ${race.time.toFixed(2)}s`);
   assert.equal(race.results[0].id, race.winner);
 });
 
@@ -175,9 +188,9 @@ test('trailing racers get the same capped eight-percent catch-up benefit', () =>
   assert.ok(Math.abs(player.speed - TRACK.baseSpeed * 1.08) < 1e-9);
 });
 
-test('a skilled player can win a roughly three-minute full race', () => {
+test('a skilled player can win a roughly one-minute full race', () => {
   const race = start(5);
-  advance(race, 300, state => {
+  advance(race, 120, state => {
     const p = state.racers[0];
     const nearby = HAZARDS.filter(h => h.end >= p.progress && h.start < p.progress + 0.9);
     const next = nearby.find(h => h.lane === Math.round(p.x));
@@ -199,7 +212,7 @@ test('a skilled player can win a roughly three-minute full race', () => {
     return input;
   });
   assert.equal(race.winner, 'player');
-  assert.ok(race.time > 180 && race.time < 240, `Player finish ${race.time.toFixed(2)}s`);
+  assert.ok(race.time > 50 && race.time < 95, `Player finish ${race.time.toFixed(2)}s`);
   assert.equal(race.racers[0].progress, TRACK.floors);
   const snapshot = JSON.stringify(race);
   stepRace(race, 1, { forward: 1 });
@@ -215,4 +228,143 @@ test('invalid dt is harmless and action commands survive a sub-frame call', () =
   assert.equal(race.racers[0].jump, 0);
   stepRace(race, 1 / 120);
   assert.ok(race.racers[0].jump > 0);
+});
+
+test('forward item pickups are lane-one, one-use per racer, and capped at one ammo', () => {
+  assert.deepEqual(ITEM_PICKUPS.map(item => item.progress), [8, 28, 48, 68, 88]);
+  assert.ok(ITEM_PICKUPS.every(item => item.lane === 1));
+  const race = start(); isolate(race);
+  const player = race.racers[0];
+  player.progress = 7.8;
+  advance(race, 0.15, { forward: 1 });
+  assert.equal(player.ammo, 1);
+  assert.equal(player._items[ITEM_PICKUPS[0].id], true);
+  player.progress = 27.8;
+  advance(race, 0.15, { forward: 1 });
+  assert.equal(player.ammo, 1);
+  assert.equal(player._items[ITEM_PICKUPS[1].id], true);
+  player.progress = 7.8; player.checkpoint = 0; player.ammo = 0;
+  advance(race, 0.15, { forward: 1 });
+  assert.equal(player.ammo, 0);
+});
+
+test('fire is queued across a sub-frame and consumes precisely one ammo', () => {
+  const race = start(); isolate(race);
+  const player = race.racers[0];
+  player.ammo = 1;
+  stepRace(race, 1 / 120, { fire: true });
+  assert.equal(player.ammo, 1);
+  assert.equal(race.projectiles.length, 0);
+  stepRace(race, 1 / 120);
+  assert.equal(player.ammo, 0);
+  assert.equal(race.projectiles.length, 1);
+  assert.equal(race.projectiles[0].ownerId, 'player');
+  assert.equal(race.projectiles[0].direction, 1);
+  assert.equal(race.projectiles[0].speed, 6);
+  assert.ok(Math.abs(race.projectiles[0].remaining - 5.9) < 1e-10);
+  advance(race, 0.2, { fire: true });
+  assert.equal(race.events.filter(e => e.type === 'fire').length, 1);
+});
+
+test('fire cooldown prevents an immediate shot after picking up replacement ammo', () => {
+  const race = start(); isolate(race);
+  const player = race.racers[0];
+  Object.assign(player, { progress: 7.81, ammo: 1 });
+  stepRace(race, 1 / 60, { fire: true, forward: 1 });
+  advance(race, 0.1, { forward: 1 });
+  assert.equal(player.ammo, 1);
+  assert.ok(player.cooldowns.fire > 0.6);
+  stepRace(race, 1 / 60, { fire: true });
+  assert.equal(player.ammo, 1);
+  assert.equal(race.events.filter(e => e.type === 'fire').length, 1);
+  advance(race, 0.8);
+  stepRace(race, 1 / 60, { fire: true });
+  assert.equal(player.ammo, 0);
+  assert.equal(race.events.filter(e => e.type === 'fire').length, 2);
+});
+
+test('projectile hits an ahead same-lane racer and leaves a behind racer untouched', () => {
+  const race = start(); isolate(race);
+  const [player, target, behind] = race.racers;
+  Object.assign(player, { progress: 3, ammo: 1 });
+  Object.assign(target, { progress: 5, lane: 1, x: 1 });
+  Object.assign(behind, { progress: 2, lane: 1, x: 1 });
+  stepRace(race, 1 / 60, { fire: true });
+  advance(race, 0.4);
+  assert.equal(race.projectiles.length, 0);
+  assert.equal(target.progress, 4.25);
+  assert.equal(behind.progress, 2);
+  assert.ok(race.events.some(e => e.type === 'projectile-hit' && e.racerId === target.id));
+});
+
+test('projectile misses another lane and expires after its six-floor range', () => {
+  const race = start(); isolate(race);
+  const [player, target, behind, distant] = race.racers;
+  Object.assign(player, { progress: 3, ammo: 1 });
+  Object.assign(target, { progress: 5, lane: 2, x: 2 });
+  Object.assign(behind, { progress: 2, lane: 1, x: 1 });
+  Object.assign(distant, { progress: 10, lane: 1, x: 1 });
+  stepRace(race, 1 / 60, { fire: true });
+  const first = race.projectiles[0].progress;
+  advance(race, 0.4);
+  assert.ok(race.projectiles[0].progress > first);
+  advance(race, 0.7);
+  assert.equal(race.projectiles.length, 0);
+  assert.equal(target.progress, 5);
+  assert.equal(behind.progress, 2);
+  assert.equal(distant.progress, 10);
+  assert.ok(race.events.some(e => e.type === 'projectile-expire'));
+});
+
+test('ordinary shield blocks a projectile; a perfect shield returns knockback to the shooter', () => {
+  for (const perfect of [false, true]) {
+    const race = start(); isolate(race);
+    const [player, target] = race.racers;
+    Object.assign(player, { progress: 3, ammo: 1 });
+    Object.assign(target, { progress: 4, lane: 1, x: 1, shield: 0.9, shieldAge: perfect ? 0 : 0.4 });
+    stepRace(race, 1 / 60, { fire: true });
+    advance(race, 0.2);
+    assert.equal(race.projectiles.length, 0);
+    assert.equal(target.progress, 4);
+    assert.equal(player.progress, perfect ? 1.7 : 3);
+    assert.ok(race.events.some(e => e.type === (perfect ? 'projectile-perfect' : 'projectile-block')));
+  }
+});
+
+test('large frame deltas sweep through supplies, items, shortcuts, and hazards at dash speed', () => {
+  const race = start(); isolate(race);
+  const player = race.racers[0];
+  Object.assign(player, { progress: 4.5, energy: 50 });
+  stepRace(race, 0.6, { forward: 1, dash: true });
+  assert.ok(player._supplies['supply-0']);
+  Object.assign(player, { progress: 7.5, dash: 0.75 });
+  stepRace(race, 0.6, { forward: 1 });
+  assert.equal(player.ammo, 1);
+  Object.assign(player, { progress: 11.5, lane: 0, x: 0, dash: 0.75 });
+  stepRace(race, 0.5, { forward: 1, jump: true });
+  assert.ok(player._shortcuts['shortcut-0']);
+  const gap = HAZARDS.find(h => h.type === 'gap');
+  Object.assign(player, { progress: gap.start - 0.1, checkpoint: 10, lane: gap.lane, x: gap.lane, jump: 0, dash: 0.75 });
+  stepRace(race, 0.5, { forward: 1 });
+  assert.equal(player.progress, 10);
+  assert.ok(player.fall > 0);
+});
+
+test('AI uses the same item pickup and projectile firing rules', () => {
+  const race = start(2026);
+  let lastEvent = 0;
+  let sawAiItem = false;
+  let sawAiFire = false;
+  for (let i = 0; i < 120 * 60 && race.status !== 'finished'; i++) {
+    stepRace(race, 1 / 60);
+    for (const event of race.events.filter(e => e.id > lastEvent)) {
+      if (event.racerId !== 'player' && event.type === 'item') sawAiItem = true;
+      if (event.racerId !== 'player' && event.type === 'fire') sawAiFire = true;
+      lastEvent = event.id;
+    }
+  }
+  assert.equal(race.status, 'finished');
+  assert.ok(sawAiItem);
+  assert.ok(sawAiFire);
+  assert.ok(race.racers.every(racer => racer.ammo >= 0 && racer.ammo <= 1));
 });
