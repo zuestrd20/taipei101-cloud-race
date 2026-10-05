@@ -5,3 +5,5 @@
 
 [data-action="fire"]{border-color:#ba83f5!important}[data-action="fire"] small{color:#d8b5ff!important}
 @media(max-width:600px){#skills button{width:auto;flex:1;min-width:0}#skills strong{font-size:12px}#skills small{font-size:9px;line-height:1.4}}
+
+canvas#world{touch-action:none}canvas#world.dragging{cursor:grabbing}.headerActions{display:flex;gap:8px}.routeLegend{text-align:right;line-height:1.8}@media(max-width:600px){.headerActions{gap:5px}.headerActions button{font-size:10px;padding:8px 7px}}

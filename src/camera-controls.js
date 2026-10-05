@@ -1,0 +1,16 @@
+/** Camera-only controls; race time, direction and physics are untouched. */
+export const CAMERA_LIMITS = Object.freeze({pitchMin:-0.28,pitchMax:0.72,yawSensitivity:0.006,pitchSensitivity:0.004});
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+export function createOrbit(){return {yaw:0,pitch:0,free:false};}
+export function resetOrbit(orbit){orbit.yaw=0;orbit.pitch=0;orbit.free=false;}
+export function rotateOrbit(orbit,dx,dy){if(!Number.isFinite(dx)||!Number.isFinite(dy))return;orbit.yaw=((orbit.yaw-dx*CAMERA_LIMITS.yawSensitivity+Math.PI)%(2*Math.PI)+2*Math.PI)%(2*Math.PI)-Math.PI;orbit.pitch=clamp(orbit.pitch-dy*CAMERA_LIMITS.pitchSensitivity,CAMERA_LIMITS.pitchMin,CAMERA_LIMITS.pitchMax);orbit.free=true;}
+export function keepOutsideTower(position,minimumRadius,fallbackAngle=0){let r=Math.hypot(position.x,position.z);if(r<minimumRadius){const angle=r>1e-8?Math.atan2(position.z,position.x):fallbackAngle;position.x=Math.cos(angle)*minimumRadius;position.z=Math.sin(angle)*minimumRadius;}position.y=Math.max(2.4,position.y);return position;}
+export function cameraPose(target,heading,trackRadius,orbit){const bx=Math.cos(heading-.28)*(trackRadius+24)-target.x,bz=Math.sin(heading-.28)*(trackRadius+24)-target.z;const horizontal=Math.hypot(bx,bz),distance=Math.hypot(horizontal,11);const elevation=clamp(Math.atan2(11,horizontal)+orbit.pitch,.12,1.2),theta=Math.atan2(bz,bx)+orbit.yaw;return keepOutsideTower({x:target.x+Math.cos(theta)*Math.cos(elevation)*distance,y:target.y+Math.sin(elevation)*distance,z:target.z+Math.sin(theta)*Math.cos(elevation)*distance},trackRadius+2.5,heading);}
+export function bindOrbitControls(canvas,orbit,{isEnabled=()=>true,onChange=()=>{}}={}){let active=null;const host=canvas.ownerDocument.defaultView;
+ const clear=()=>{if(active===null)return;const id=active.id;active=null;try{if(canvas.hasPointerCapture?.(id))canvas.releasePointerCapture(id)}catch{}canvas.classList.remove('dragging');};
+ const down=e=>{if(!isEnabled()||active!==null||(e.pointerType==='mouse'&&e.button!==0))return;active={id:e.pointerId,x:e.clientX,y:e.clientY,startX:e.clientX,startY:e.clientY,moved:false};try{canvas.setPointerCapture(e.pointerId)}catch{}e.preventDefault();};
+ const move=e=>{if(!active||active.id!==e.pointerId)return;if(!isEnabled()){clear();return}const dx=e.clientX-active.x,dy=e.clientY-active.y;active.x=e.clientX;active.y=e.clientY;if(!active.moved&&Math.hypot(e.clientX-active.startX,e.clientY-active.startY)<4)return;active.moved=true;canvas.classList.add('dragging');rotateOrbit(orbit,dx,dy);onChange();e.preventDefault();};
+ const up=e=>{if(active?.id===e.pointerId)clear();};
+ canvas.addEventListener('pointerdown',down);canvas.addEventListener('pointermove',move);canvas.addEventListener('pointerup',up);canvas.addEventListener('pointercancel',up);canvas.addEventListener('lostpointercapture',up);host.addEventListener('blur',clear);
+ return {clear,get dragging(){return active!==null},dispose(){clear();canvas.removeEventListener('pointerdown',down);canvas.removeEventListener('pointermove',move);canvas.removeEventListener('pointerup',up);canvas.removeEventListener('pointercancel',up);canvas.removeEventListener('lostpointercapture',up);host.removeEventListener('blur',clear)}};
+}
